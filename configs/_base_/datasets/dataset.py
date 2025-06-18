@@ -35,6 +35,7 @@ train_dataloader = dict(
         metainfo=metainfo,
         ann_file='VisDrone2019-DET-train/annotations/train.json',
         data_prefix=dict(img='VisDrone2019-DET-train/images/'),
+        # filter_cfg=dict(filter_empty_gt=True, min_size=1e-5),
         pipeline=train_pipeline,
         backend_args=backend_args))
 

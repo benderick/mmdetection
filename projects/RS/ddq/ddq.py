@@ -2,9 +2,13 @@ _base_ = [
     'mmdet::_base_/datasets/dataset.py', 
     'mmdet::_base_/default_runtime.py'
 ]
+custom_imports = dict(imports=['mmpretrain.models'], allow_failed_imports=False)
+
 model = dict(
-    type='DINO',
-    num_queries=600,  # num_matching_queries
+    type='DDQDETR',
+    num_queries=300,  # num_matching_queries
+    # ratio of num_dense queries to num_queries
+    dense_topk_ratio=1.5,
     with_box_refine=True,
     as_two_stage=True,
     data_preprocessor=dict(
@@ -14,23 +18,19 @@ model = dict(
         bgr_to_rgb=True,
         pad_size_divisor=32),
     backbone=dict(
-        type='ResNet',
-        depth=50,
-        num_stages=4,
-        out_indices=(1, 2, 3),
-        frozen_stages=1,
-        norm_cfg=dict(type='BN', requires_grad=False),
-        norm_eval=True,
-        style='pytorch',
-        init_cfg=dict(type='Pretrained', checkpoint='torchvision://resnet50')),
+        type='mmpretrain.MViT',
+        arch='tiny',
+        out_scales=[1, 2, 3],
+        drop_path_rate=0.1),
     neck=dict(
         type='ChannelMapper',
-        in_channels=[512, 1024, 2048],
+        in_channels=[192, 384, 768],
         kernel_size=1,
         out_channels=256,
         act_cfg=None,
         norm_cfg=dict(type='GN', num_groups=32),
         num_outs=4),
+    # encoder class name: DeformableDetrTransformerEncoder
     encoder=dict(
         num_layers=6,
         layer_cfg=dict(
@@ -38,8 +38,9 @@ model = dict(
                                dropout=0.0),  # 0.1 for DeformDETR
             ffn_cfg=dict(
                 embed_dims=256,
-                feedforward_channels=2048,  # 1024 for DeformDETR
+                feedforward_channels=1024,  # 1024 for DeformDETR
                 ffn_drop=0.0))),  # 0.1 for DeformDETR
+    # decoder class name: DDQTransformerDecoder
     decoder=dict(
         num_layers=6,
         return_intermediate=True,
@@ -50,7 +51,7 @@ model = dict(
                                 dropout=0.0),  # 0.1 for DeformDETR
             ffn_cfg=dict(
                 embed_dims=256,
-                feedforward_channels=2048,  # 1024 for DeformDETR
+                feedforward_channels=1024,  # 1024 for DeformDETR
                 ffn_drop=0.0)),  # 0.1 for DeformDETR
         post_norm_cfg=None),
     positional_encoding=dict(
@@ -59,7 +60,7 @@ model = dict(
         offset=0.0,  # -0.5 for DeformDETR
         temperature=20),  # 10000 for DeformDETR
     bbox_head=dict(
-        type='DINOHead',
+        type='DDQDETRHead',
         num_classes=10,
         sync_cls_avg_factor=True,
         loss_cls=dict(
@@ -67,14 +68,14 @@ model = dict(
             use_sigmoid=True,
             gamma=2.0,
             alpha=0.25,
-            loss_weight=1.0),  # 2.0 in DeformDETR
+            loss_weight=1.0),
         loss_bbox=dict(type='L1Loss', loss_weight=5.0),
         loss_iou=dict(type='GIoULoss', loss_weight=2.0)),
-    dn_cfg=dict(  # TODO: Move to model.train_cfg ?
+    dn_cfg=dict(
         label_noise_scale=0.5,
-        box_noise_scale=1.0,  # 0.4 for DN-DETR
-        group_cfg=dict(dynamic=True, num_groups=None,
-                       num_dn_queries=100)),  # TODO: half num_dn_queries
+        box_noise_scale=1.0,
+        group_cfg=dict(dynamic=True, num_groups=None, num_dn_queries=100)),
+    dqs_cfg=dict(type='nms', iou_threshold=0.8),
     # training and testing settings
     train_cfg=dict(
         assigner=dict(
@@ -84,18 +85,15 @@ model = dict(
                 dict(type='BBoxL1Cost', weight=5.0, box_format='xywh'),
                 dict(type='IoUCost', iou_mode='giou', weight=2.0)
             ])),
-    test_cfg=dict(max_per_img=300))  # 100 for DeformDETR
+    test_cfg=dict(max_per_img=300))
 
 
 # optimizer
 optim_wrapper = dict(
     type='OptimWrapper',
-    optimizer=dict(
-        type='AdamW',
-        lr=0.0001,  # 0.0002 for DeformDETR
-        weight_decay=0.0001),
-    clip_grad=dict(max_norm=0.1, norm_type=2)
-)  # custom_keys contains sampling_offsets and reference_points in DeformDETR  # noqa
+    optimizer=dict(type='AdamW', lr=0.0002, weight_decay=0.05),
+    clip_grad=dict(max_norm=0.1, norm_type=2),
+    paramwise_cfg=dict(custom_keys={'backbone': dict(lr_mult=1.0)}))
 
 # learning policy
 max_epochs = 150
@@ -107,11 +105,17 @@ test_cfg = dict(type='TestLoop')
 
 param_scheduler = [
     dict(
+        type='LinearLR',
+        start_factor=0.0001,
+        by_epoch=True,
+        begin=0,
+        end=2),
+    dict(
         type='MultiStepLR',
         begin=0,
         end=max_epochs,
         by_epoch=True,
-        milestones=[40, 80, 120, 160],
+        milestones=[40, 80, 120],
         gamma=0.5)
 ]
 
@@ -119,3 +123,10 @@ param_scheduler = [
 # USER SHOULD NOT CHANGE ITS VALUES.
 # base_batch_size = (8 GPUs) x (2 samples per GPU)
 auto_scale_lr = dict(base_batch_size=16)
+
+train_dataloader = dict(
+    batch_size=7)
+val_dataloader = dict(
+    batch_size=7)
+test_dataloader = dict(
+    batch_size=7)
